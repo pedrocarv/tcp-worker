@@ -6,15 +6,8 @@ use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 
 fn main() -> std::io::Result<()> {
-    // TODO 1: Bind a TcpListener to "127.0.0.1:7878".
-    //         End the call with `?` so an error (e.g. port already in use)
-    //         ends the program with a message instead of being ignored.
     let listener = TcpListener::bind("127.0.0.1:7878")?;
-    // TODO 2: Loop over the listener's incoming connections.
-    //         Each item is a std::io::Result<TcpStream>.
-    //         For each Ok(stream): print the client's address (peer_addr),
-    //         then call handle_client(stream).
-    //         For each Err(e): print it and keep going.
+
     for connection in listener.incoming() {
         match connection {
             Ok(stream) => {
@@ -33,23 +26,11 @@ fn main() -> std::io::Result<()> {
 
 /// Serve one client until it disconnects.
 fn handle_client(stream: TcpStream) -> std::io::Result<()> {
-    // TODO 3: Make a BufReader so you can read the socket one line at a time.
-    //         Hint: stream.try_clone() gives you a second handle to the same
-    //         socket: one for reading (inside the BufReader), one for writing.
     let mut clone = stream.try_clone()?;
     let mut reader = BufReader::new(stream);
     let mut line = String::new();
-   
-    // TODO 4: Loop:
-    //           - read one line into a String with read_line
-    //           - if read_line returns Ok(0), the client closed the
-    //             connection: return Ok(())
-    //           - otherwise send the line back with write_all
-    //         Remember to clear the String between lines.
+
     while reader.read_line(&mut line)? > 0 {
-        // TODO 8: Instead of echoing, call run_job(&line) and reply with
-        //         one line: the number if it worked, "error: <message>" if not.
-        //         Hint: writeln!(clone, "...")? writes a formatted line.
         match run_job(&line) {
             Ok(n) => writeln!(clone, "{n}")?,
             Err(e) => writeln!(clone, "error: {e}")?,
@@ -66,15 +47,12 @@ fn handle_client(stream: TcpStream) -> std::io::Result<()> {
 ///   "max 4 9 2" -> Ok(9)
 /// Anything else is an Err with a message for the client.
 fn run_job(line: &str) -> Result<i64, String> {
-    // TODO 5: Split the line into words with split_whitespace().
-    //         The first word is the command; if there is none, return an Err.
     let mut words = line.split_whitespace();
     let command = match words.next() {          // first word, if there is one
         Some(w) => w,
         None => return Err("empty line".to_string()),
     };
-    // TODO 6: Parse each remaining word as an i64 and collect them in a Vec<i64>.
-    //         If a word isn't a number, return an Err that names the word.
+
     let mut nums = Vec::new();
     for w in words {                          // the rest of the words
         match w.parse::<i64>() {
@@ -82,10 +60,6 @@ fn run_job(line: &str) -> Result<i64, String> {
             Err(_) => return Err(format!("not a number: {w}")),
         }
     }
-    // TODO 7: match on the command:
-    //           "sum" -> the sum of the numbers (the sum of no numbers is 0)
-    //           "max" -> the largest number (an Err if there are none)
-    //           anything else -> an Err that names the unknown command
 
     match command {
         "sum" => {
