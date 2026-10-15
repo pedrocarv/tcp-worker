@@ -1,9 +1,10 @@
-// Stage 1b: a single-threaded job server.
+// Stage 2: a multi-threaded job server.
 // Each line a client sends is a job such as "sum 1 2 3"; the server
 // replies with one line: the result ("6") or "error: <message>".
 
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
+use std::thread;
 
 fn main() -> std::io::Result<()> {
     let listener = TcpListener::bind("127.0.0.1:7878")?;
@@ -12,9 +13,11 @@ fn main() -> std::io::Result<()> {
         match connection {
             Ok(stream) => {
                 println!("client connected: {:?}", stream.peer_addr());
-                if let Err(e) = handle_client(stream) {
-                    eprintln!("client error: {e}");
-                }
+                thread::spawn(move || { 
+                    if let Err(e) = handle_client(stream) {
+                        eprintln!("client error: {e}");
+                    }
+                });
             }
             Err(e) => {
                 eprintln!("failed to accept connection: {e}");
