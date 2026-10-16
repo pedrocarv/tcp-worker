@@ -1,23 +1,40 @@
-// Stage 2: a multi-threaded job server.
+// Stage 3: a job server with a fixed pool of worker threads.
 // Each line a client sends is a job such as "sum 1 2 3"; the server
 // replies with one line: the result ("6") or "error: <message>".
 
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
+use std::sync::mpsc::{self, Receiver};
+use std::sync::{Arc, Mutex};
 use std::thread;
+
+/// Number of worker threads: the most clients served at the same time.
+const WORKERS: usize = 4;
+/// Most accepted connections allowed to wait for a free worker.
+const QUEUE_SIZE: usize = 16;
 
 fn main() -> std::io::Result<()> {
     let listener = TcpListener::bind("127.0.0.1:7878")?;
+
+    // Accepted connections wait here for a free worker. The channel is
+    // bounded, so when it is full, send() blocks and the accept loop pauses.
+    let (sender, receiver) = mpsc::sync_channel::<TcpStream>(QUEUE_SIZE);
+    let receiver = Arc::new(Mutex::new(receiver));
+
+    for id in 0..WORKERS {
+        let receiver = Arc::clone(&receiver);
+        thread::spawn(move || worker(id, receiver));
+    }
 
     for connection in listener.incoming() {
         match connection {
             Ok(stream) => {
                 println!("client connected: {:?}", stream.peer_addr());
-                thread::spawn(move || { 
-                    if let Err(e) = handle_client(stream) {
-                        eprintln!("client error: {e}");
-                    }
-                });
+                // Fails only if every worker has exited.
+                if let Err(e) = sender.send(stream) {
+                    eprintln!("failed to send connection to worker: {e}");
+                    break;
+                }
             }
             Err(e) => {
                 eprintln!("failed to accept connection: {e}");
@@ -25,6 +42,26 @@ fn main() -> std::io::Result<()> {
         }
     }
     Ok(())
+}
+
+/// One worker thread: take the next waiting connection, serve that client
+/// until it disconnects, then go back for another.
+fn worker(id: usize, receiver: Arc<Mutex<Receiver<TcpStream>>>) {
+    loop {
+        // The lock guard is a temporary, dropped at the end of this
+        // statement, so the lock is released before the client is served.
+        // (`while let Ok(stream) = receiver.lock()...` would hold it for the
+        // whole loop body and let only one worker run at a time.)
+        let message = receiver.lock().unwrap().recv();
+        match message {
+            Ok(stream) => {
+                if let Err(e) = handle_client(stream) {
+                    eprintln!("worker {id}: client error: {e}");
+                }
+            }
+            Err(_) => break, // channel closed: no more connections will come
+        }
+    }
 }
 
 /// Serve one client until it disconnects.
