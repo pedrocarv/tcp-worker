@@ -1,23 +1,27 @@
-// Stage 3: a job server with a fixed pool of worker threads.
+// Stage 4: a job server with a fixed pool of worker threads that sheds
+// load when busy and drops idle clients.
 // Each line a client sends is a job such as "sum 1 2 3"; the server
 // replies with one line: the result ("6") or "error: <message>".
 
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, ErrorKind, Write};
 use std::net::{TcpListener, TcpStream};
-use std::sync::mpsc::{self, Receiver};
+use std::sync::mpsc::{self, Receiver, TrySendError};
 use std::sync::{Arc, Mutex};
 use std::thread;
+use std::time::Duration;
 
 /// Number of worker threads: the most clients served at the same time.
 const WORKERS: usize = 4;
 /// Most accepted connections allowed to wait for a free worker.
 const QUEUE_SIZE: usize = 16;
+/// How long a client may stay silent before the server disconnects it.
+const IDLE_TIMEOUT: Duration = Duration::from_secs(10);
 
 fn main() -> std::io::Result<()> {
     let listener = TcpListener::bind("127.0.0.1:7878")?;
 
     // Accepted connections wait here for a free worker. The channel is
-    // bounded, so when it is full, send() blocks and the accept loop pauses.
+    // bounded; when it is full, new clients are turned away (see below).
     let (sender, receiver) = mpsc::sync_channel::<TcpStream>(QUEUE_SIZE);
     let receiver = Arc::new(Mutex::new(receiver));
 
@@ -30,10 +34,17 @@ fn main() -> std::io::Result<()> {
         match connection {
             Ok(stream) => {
                 println!("client connected: {:?}", stream.peer_addr());
-                // Fails only if every worker has exited.
-                if let Err(e) = sender.send(stream) {
-                    eprintln!("failed to send connection to worker: {e}");
-                    break;
+                // Shed load: if the queue is full, tell the client and close
+                // the connection instead of making the accept loop wait.
+                match sender.try_send(stream) {
+                    Ok(()) => {}
+                    Err(TrySendError::Full(mut stream)) => {
+                        let _ = writeln!(stream, "error: server busy");
+                    }
+                    Err(TrySendError::Disconnected(_)) => {
+                        eprintln!("all workers have exited; shutting down");
+                        break;
+                    }
                 }
             }
             Err(e) => {
@@ -66,18 +77,35 @@ fn worker(id: usize, receiver: Arc<Mutex<Receiver<TcpStream>>>) {
 
 /// Serve one client until it disconnects.
 fn handle_client(stream: TcpStream) -> std::io::Result<()> {
+    // A read that waits longer than IDLE_TIMEOUT fails instead of blocking
+    // forever, so a silent client can't hold a worker indefinitely.
+    stream.set_read_timeout(Some(IDLE_TIMEOUT))?;
     let mut clone = stream.try_clone()?;
     let mut reader = BufReader::new(stream);
     let mut line = String::new();
 
-    while reader.read_line(&mut line)? > 0 {
-        match run_job(&line) {
-            Ok(n) => writeln!(clone, "{n}")?,
-            Err(e) => writeln!(clone, "error: {e}")?,
+    loop {
+        match reader.read_line(&mut line) {
+            // The client closed the connection.
+            Ok(0) => return Ok(()),
+            // A full line arrived: run the job and reply.
+            Ok(_) => {
+                match run_job(&line) {
+                    Ok(n) => writeln!(clone, "{n}")?,
+                    Err(e) => writeln!(clone, "error: {e}")?,
+                }
+                line.clear();
+            }
+            // The client was silent for IDLE_TIMEOUT. A timed-out read is
+            // WouldBlock on macOS and Linux, TimedOut on Windows.
+            Err(e) if e.kind() == ErrorKind::WouldBlock || e.kind() == ErrorKind::TimedOut => {
+                let _ = writeln!(clone, "error: idle timeout");
+                return Ok(());
+            }
+            // Any other error is a real failure: report it.
+            Err(e) => return Err(e),
         }
-        line.clear();
     }
-    Ok(())
 }
 
 /// Run one job and return its result.

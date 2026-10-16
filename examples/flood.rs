@@ -40,15 +40,22 @@ fn main() {
     }
     sleep(Duration::from_secs(1));
 
-    let mut served = 0;
+    let (mut served, mut busy) = (0, 0);
     for s in &conns {
         let _ = s.set_read_timeout(Some(Duration::from_millis(50)));
         let mut reply = String::new();
-        if BufReader::new(s).read_line(&mut reply).is_ok() && reply.trim() == "3" {
-            served += 1;
+        if BufReader::new(s).read_line(&mut reply).is_ok() {
+            match reply.trim() {
+                "3" => served += 1,
+                "error: server busy" => busy += 1,
+                _ => {}
+            }
         }
     }
-    println!("{served} of {} connections were served", conns.len());
+    let total = conns.len();
+    println!("{served} of {total} connections were served");
+    println!("{busy} were told the server is busy");
+    println!("{} got no reply", total - served - busy);
 
     println!("holding the connections open; press Enter to close them");
     let _ = std::io::stdin().read_line(&mut String::new());
